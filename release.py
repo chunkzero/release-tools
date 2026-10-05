@@ -44,23 +44,34 @@ def verify_checksums(assets):
                 raise ValueError(f"checksum mismatch: {path.name}")
 
 
+def api(path):
+    """GitHub API response, or None only when GitHub answers 404; any other failure raises."""
+    result = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+    if result.returncode == 0:
+        return json.loads(result.stdout)
+    if "HTTP 404" in result.stderr:
+        return None
+    raise RuntimeError(f"gh api {path} failed: {result.stderr.strip()}")
+
+
 def find_release(repository, tag):
-    """The published release for `tag`, else a draft for it among the newest 100 releases, else None."""
-    published = subprocess.run(["gh", "api", f"repos/{repository}/releases/tags/{tag}"], capture_output=True, text=True)
-    if published.returncode == 0:
-        return json.loads(published.stdout)
-    recent = json.loads(run("gh", "api", f"repos/{repository}/releases?per_page=100"))
-    return next((release for release in recent if release["tag_name"] == tag), None)
+    """The release for `tag`, published or draft, or None."""
+    published = api(f"repos/{repository}/releases/tags/{tag}")
+    if published:
+        return published
+    # Drafts are only reachable through the release list.
+    pages = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
+    return next((release for page in pages for release in page if release["tag_name"] == tag), None)
 
 
 def tag_commit(repository, tag):
     """Commit the tag points at, following annotated tags, or None when the tag doesn't exist."""
-    ref = subprocess.run(["gh", "api", f"repos/{repository}/git/ref/tags/{tag}"], capture_output=True, text=True)
-    if ref.returncode != 0:
+    ref = api(f"repos/{repository}/git/ref/tags/{tag}")
+    if ref is None:
         return None
-    target = json.loads(ref.stdout)["object"]
+    target = ref["object"]
     while target["type"] == "tag":
-        target = json.loads(run("gh", "api", f"repos/{repository}/git/tags/{target['sha']}"))["object"]
+        target = api(f"repos/{repository}/git/tags/{target['sha']}")["object"]
     return target["sha"]
 
 

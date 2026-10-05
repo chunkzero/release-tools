@@ -34,6 +34,19 @@ class VersionTest(unittest.TestCase):
             release.release_version("0.1.0", "refs/tags/v0.1.1")
 
 
+class ApiTest(unittest.TestCase):
+    def test_only_404_means_absent(self):
+        from unittest import mock
+        import subprocess
+        missing = subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+        failing = subprocess.CompletedProcess([], 1, "", "gh: Server Error (HTTP 500)")
+        with mock.patch.object(release.subprocess, "run", return_value=missing):
+            self.assertIsNone(release.tag_commit("chunkzero/chunk", "v0.1.0"))
+        with mock.patch.object(release.subprocess, "run", return_value=failing):
+            with self.assertRaises(RuntimeError):
+                release.tag_commit("chunkzero/chunk", "v0.1.0")
+
+
 class RegistryEntryTest(unittest.TestCase):
     def test_describes_archives_with_verified_checksums(self):
         with tempfile.TemporaryDirectory() as temporary:
