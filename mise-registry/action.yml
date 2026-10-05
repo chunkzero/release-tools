@@ -1,5 +1,5 @@
 name: Register in mise registry
-description: Open an auto-merging pull request that adds a published release to chunkzero/mise-registry.
+description: Add a published release to chunkzero/mise-registry through an auto-merging pull request, and wait for it to merge.
 
 inputs:
   tool:
@@ -29,11 +29,24 @@ runs:
         python3 "$GITHUB_ACTION_PATH/../release.py" registry-entry --tool "$TOOL" --version "$VERSION" \
           --directory "$DIRECTORY" > "$RUNNER_TEMP/$TOOL-$VERSION.json"
         branch="$TOOL-$VERSION"
+        # Waiting for the merge keeps a tool's registrations in order, since each one rewrites the tool's file.
+        merge() {
+          gh pr merge "$1" --auto --squash
+          for _ in $(seq 120); do
+            case "$(gh pr view "$1" --json state --jq .state)" in
+              MERGED) echo "registered: $1"; return 0 ;;
+              CLOSED) echo "::error::$1 was closed without merging"; return 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::$1 didn't merge within 20 minutes; check its Validate run"
+          return 1
+        }
         pr=$(gh pr list --repo chunkzero/mise-registry --head "$branch" --state all --json url,state \
           --jq '.[0] // empty | "\(.state) \(.url)"')
         case "$pr" in
           MERGED*) echo "$TOOL $VERSION is already registered: ${pr#* }"; exit 0 ;;
-          OPEN*) gh pr merge "${pr#* }" --auto --squash; echo "${pr#* }"; exit 0 ;;
+          OPEN*) merge "${pr#* }"; exit ;;
           CLOSED*) echo "::error::the registry PR for $TOOL $VERSION was closed without merging: ${pr#* }"; exit 1 ;;
         esac
         work=$(mktemp -d)
@@ -56,5 +69,4 @@ runs:
         fi
         url=$(gh pr create --repo chunkzero/mise-registry --head "$branch" --title "feat: add $TOOL $VERSION" \
           --body "Registers https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION.")
-        gh pr merge "$url" --auto --squash
-        echo "$url"
+        merge "$url"
