@@ -1,0 +1,95 @@
+name: Register in mise registry
+description: >-
+  Add a published release to chunkzero/mise-registry through an auto-merging pull request and wait for it to merge,
+  rebuilding the pull request on the registry's main branch whenever another registration conflicts with it.
+
+inputs:
+  tool:
+    description: Tool name; archives must be named `<tool>-<version>-<platform>.tar.gz`.
+    required: true
+  version:
+    description: Published release version, without the leading v.
+    required: true
+  directory:
+    description: Directory holding the published archives and their `.sha256` files.
+    required: true
+  token:
+    description: GitHub App installation token with contents and pull request write access to chunkzero/mise-registry.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        TOOL: ${{ inputs.tool }}
+        VERSION: ${{ inputs.version }}
+        DIRECTORY: ${{ inputs.directory }}
+      run: |
+        set -euo pipefail
+        shopt -s inherit_errexit
+        entry="$RUNNER_TEMP/$TOOL-$VERSION.json"
+        python3 "$GITHUB_ACTION_PATH/../release.py" registry-entry --tool "$TOOL" --version "$VERSION" \
+          --directory "$DIRECTORY" > "$entry"
+        branch="$TOOL-$VERSION"
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"' EXIT
+        gh auth setup-git
+
+        # Rebuilds the registration branch on the registry's current main and prints `pushed`, or prints `registered` when
+        # main already has this version. Callers assign its output so any failure stops the step.
+        prepare() (
+          rm -rf "$work/registry"
+          git clone --quiet https://github.com/chunkzero/mise-registry "$work/registry"
+          cd "$work/registry"
+          python3 scripts/registry.py add "$TOOL" "$entry"
+          if git diff --quiet; then
+            echo registered
+            exit 0
+          fi
+          git switch --quiet -c "$branch"
+          git -c user.name="chunkzero-registry[bot]" -c user.email="chunkzero-registry[bot]@users.noreply.github.com" \
+            commit --quiet -am "feat: add $TOOL $VERSION"
+          git push --quiet --force origin "$branch"
+          echo pushed
+        )
+
+        pr=$(gh pr list --repo chunkzero/mise-registry --head "$branch" --state all --json url,state \
+          --jq '.[0] // empty | "\(.state) \(.url)"')
+        case "$pr" in
+          MERGED*) echo "$TOOL $VERSION is already registered: ${pr#* }"; exit 0 ;;
+          CLOSED*) echo "::error::the registry PR for $TOOL $VERSION was closed without merging: ${pr#* }"; exit 1 ;;
+        esac
+        result=$(prepare)
+        if [ "$result" = registered ]; then
+          echo "$TOOL $VERSION is already registered"
+          exit 0
+        fi
+        url=${pr#* }
+        if [ -z "$pr" ]; then
+          url=$(gh pr create --repo chunkzero/mise-registry --head "$branch" --title "feat: add $TOOL $VERSION" \
+            --body "Registers https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION.")
+        fi
+
+        # Another registration of this tool can merge first and conflict with this one; rebuilding resolves that.
+        for _ in $(seq 120); do
+          status=$(gh pr view "$url" --json state,mergeable --jq '"\(.state) \(.mergeable)"')
+          read -r state mergeable <<< "$status"
+          case "$state" in
+            MERGED) echo "registered: $url"; exit 0 ;;
+            CLOSED) echo "::error::$url was closed without merging"; exit 1 ;;
+          esac
+          if [ "$mergeable" = CONFLICTING ]; then
+            result=$(prepare)
+            if [ "$result" = registered ]; then
+              echo "$TOOL $VERSION is already registered"
+              exit 0
+            fi
+          fi
+          # Fails harmlessly if the pull request merged since it was checked; the next check sees that.
+          gh pr merge "$url" --auto --squash || true
+          sleep 10
+        done
+        echo "::error::$url didn't merge within 20 minutes; check its Validate run"
+        exit 1

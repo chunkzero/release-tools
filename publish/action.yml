@@ -1,0 +1,26 @@
+name: Publish GitHub release
+description: >-
+  Publish verified assets as an immutable GitHub release: upload to a draft, download and compare every asset, then make
+  it public. Prereleases are never marked latest. Rerunning for an already published version only verifies it.
+
+inputs:
+  version:
+    description: Release version, without the leading v.
+    required: true
+  directory:
+    description: Directory holding every asset; each file except `.sha256` files needs a matching `<name>.sha256`.
+    required: true
+  title:
+    description: Release title prefix, e.g. the project name.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ inputs.version }}
+        DIRECTORY: ${{ inputs.directory }}
+        TITLE: ${{ inputs.title }}
+      run: python3 "$GITHUB_ACTION_PATH/../release.py" publish --version "$VERSION" --directory "$DIRECTORY" --title "$TITLE"

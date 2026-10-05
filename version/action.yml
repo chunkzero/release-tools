@@ -1,0 +1,32 @@
+name: Release version
+description: Compute the version for this build from the project's upcoming release.
+
+inputs:
+  base:
+    description: The upcoming release version from the project's version file, e.g. 0.1.0 or 0.1.0-beta.1.
+    required: true
+  channel:
+    description: "`nightly` builds `<base>-nightly.<UTC commit time>.g<sha12>`; `release` uses the base as is."
+    required: true
+
+outputs:
+  version:
+    description: Version for every artifact of this build.
+    value: ${{ steps.version.outputs.version }}
+  tag:
+    description: Git tag, `v<version>`.
+    value: ${{ steps.version.outputs.tag }}
+  published:
+    description: "`true` when a public GitHub release already exists for this version."
+    value: ${{ steps.version.outputs.published }}
+
+runs:
+  using: composite
+  steps:
+    - id: version
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        BASE: ${{ inputs.base }}
+        CHANNEL: ${{ inputs.channel }}
+      run: python3 "$GITHUB_ACTION_PATH/../release.py" version --base "$BASE" --channel "$CHANNEL"
