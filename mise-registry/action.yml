@@ -27,29 +27,33 @@ runs:
       run: |
         set -euo pipefail
         python3 "$GITHUB_ACTION_PATH/../release.py" registry-entry --tool "$TOOL" --version "$VERSION" \
-          --directory "$DIRECTORY" > "$RUNNER_TEMP/entry.json"
+          --directory "$DIRECTORY" > "$RUNNER_TEMP/$TOOL-$VERSION.json"
         branch="$TOOL-$VERSION"
-        existing=$(gh pr list --repo chunkzero/mise-registry --head "$branch" --state all --json url --jq '.[0].url // empty')
-        if [ -n "$existing" ]; then
-          echo "$existing"
-          exit 0
-        fi
+        pr=$(gh pr list --repo chunkzero/mise-registry --head "$branch" --state all --json url,state \
+          --jq '.[0] // empty | "\(.state) \(.url)"')
+        case "$pr" in
+          MERGED*) echo "$TOOL $VERSION is already registered: ${pr#* }"; exit 0 ;;
+          OPEN*) gh pr merge "${pr#* }" --auto --squash; echo "${pr#* }"; exit 0 ;;
+          CLOSED*) echo "::error::the registry PR for $TOOL $VERSION was closed without merging: ${pr#* }"; exit 1 ;;
+        esac
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"' EXIT
         gh auth setup-git
-        git clone --quiet https://github.com/chunkzero/mise-registry "$RUNNER_TEMP/mise-registry"
-        cd "$RUNNER_TEMP/mise-registry"
-        if ! python3 scripts/registry.py add "$TOOL" "$RUNNER_TEMP/entry.json"; then
-          echo "::error::the registry rejected $TOOL $VERSION"
-          exit 1
+        git clone --quiet https://github.com/chunkzero/mise-registry "$work"
+        cd "$work"
+        # A previous run may have pushed the branch and failed before opening its pull request.
+        if ! git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+          python3 scripts/registry.py add "$TOOL" "$RUNNER_TEMP/$TOOL-$VERSION.json"
+          if git diff --quiet; then
+            echo "$TOOL $VERSION is already registered"
+            exit 0
+          fi
+          git switch --quiet -c "$branch"
+          git config user.name "chunkzero-registry[bot]"
+          git config user.email "chunkzero-registry[bot]@users.noreply.github.com"
+          git commit --quiet -am "feat: add $TOOL $VERSION"
+          git push --quiet origin "$branch"
         fi
-        if git diff --quiet; then
-          echo "$TOOL $VERSION is already registered"
-          exit 0
-        fi
-        git switch --quiet -c "$branch"
-        git config user.name "chunkzero-registry[bot]"
-        git config user.email "chunkzero-registry[bot]@users.noreply.github.com"
-        git commit --quiet -am "feat: add $TOOL $VERSION"
-        git push --quiet origin "$branch"
         url=$(gh pr create --repo chunkzero/mise-registry --head "$branch" --title "feat: add $TOOL $VERSION" \
           --body "Registers https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION.")
         gh pr merge "$url" --auto --squash

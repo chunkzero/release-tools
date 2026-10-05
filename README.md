@@ -41,3 +41,11 @@ deletes old releases, so exact pins and lockfiles keep working.
 `version` also reports `published: true` when that version is already public, so scheduled nightlies can skip unchanged
 commits. CLI archives must be named `<tool>-<version>-<platform>.tar.gz`, with platforms `linux-x64`, `linux-arm64`,
 `darwin-x64`, `darwin-arm64` and `windows-x64`, and contain one top-level directory holding the executable.
+
+## Requirements
+
+- Jobs running `publish` need `permissions: contents: write`, and must not publish the same version concurrently; use a
+  workflow `concurrency` group. Enable immutable releases in the repository settings so GitHub itself rejects changes to
+  published releases.
+- `mise-registry` needs a GitHub App installation token for `chunkzero/mise-registry`. That repository allows squash
+  merges and auto-merge, and requires its Validate check, so registrations merge only after their archives verify.

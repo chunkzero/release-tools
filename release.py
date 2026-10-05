@@ -45,8 +45,23 @@ def verify_checksums(assets):
 
 
 def find_release(repository, tag):
-    pages = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases"))
-    return next((release for page in pages for release in page if release["tag_name"] == tag), None)
+    """The published release for `tag`, else a draft for it among the newest 100 releases, else None."""
+    published = subprocess.run(["gh", "api", f"repos/{repository}/releases/tags/{tag}"], capture_output=True, text=True)
+    if published.returncode == 0:
+        return json.loads(published.stdout)
+    recent = json.loads(run("gh", "api", f"repos/{repository}/releases?per_page=100"))
+    return next((release for release in recent if release["tag_name"] == tag), None)
+
+
+def tag_commit(repository, tag):
+    """Commit the tag points at, following annotated tags, or None when the tag doesn't exist."""
+    ref = subprocess.run(["gh", "api", f"repos/{repository}/git/ref/tags/{tag}"], capture_output=True, text=True)
+    if ref.returncode != 0:
+        return None
+    target = json.loads(ref.stdout)["object"]
+    while target["type"] == "tag":
+        target = json.loads(run("gh", "api", f"repos/{repository}/git/tags/{target['sha']}"))["object"]
+    return target["sha"]
 
 
 def verify_uploaded(repository, tag, assets):
@@ -61,20 +76,29 @@ def verify_uploaded(repository, tag, assets):
 
 
 def publish(repository, version, sha, directory, title):
-    """Create or resume a draft, upload and re-download every asset, then publish. Published releases never change."""
+    """Create or resume a draft, upload and re-download every asset, then publish. Published releases never change.
+
+    Callers must not publish the same version concurrently, e.g. with a workflow `concurrency` group."""
     tag = f"v{version}"
     assets = sorted(path for path in directory.iterdir() if path.is_file())
     if not assets:
         raise ValueError("release has no assets")
     verify_checksums(assets)
     existing = find_release(repository, tag)
-    if existing and existing["target_commitish"] != sha:
-        raise ValueError(f"{tag} already belongs to {existing['target_commitish']}")
+    # A draft has no tag until it's published, so its target is the only record of its commit.
+    commit = tag_commit(repository, tag) or (existing["target_commitish"] if existing else sha)
+    if commit != sha:
+        raise ValueError(f"{tag} already belongs to {commit}, not {sha}")
     if existing and not existing["draft"]:
         verify_uploaded(repository, tag, assets)
         print(f"{tag} is already published with identical assets")
         return
-    if not existing:
+    if existing:
+        names = {path.name for path in assets}
+        for asset in existing["assets"]:
+            if asset["name"] not in names:
+                run("gh", "release", "delete-asset", tag, asset["name"], "--repo", repository, "--yes")
+    else:
         run("gh", "release", "create", tag, "--repo", repository, "--draft", "--target", sha,
             "--title", f"{title} {version}", "--notes", f"Source commit: {sha}\n")
     run("gh", "release", "upload", tag, "--repo", repository, "--clobber", *map(str, assets))
