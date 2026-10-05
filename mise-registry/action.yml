@@ -42,6 +42,11 @@ runs:
           echo "::error::$1 didn't merge within 20 minutes; check its Validate run"
           return 1
         }
+        # Finish any earlier registration of this tool first, e.g. one a cancelled run left open.
+        for earlier in $(gh pr list --repo chunkzero/mise-registry --state open --json headRefName,url \
+          --jq ".[] | select(.headRefName != \"$branch\" and (.headRefName | test(\"^$TOOL-[0-9]\"))) | .url"); do
+          merge "$earlier"
+        done
         pr=$(gh pr list --repo chunkzero/mise-registry --head "$branch" --state all --json url,state \
           --jq '.[0] // empty | "\(.state) \(.url)"')
         case "$pr" in
